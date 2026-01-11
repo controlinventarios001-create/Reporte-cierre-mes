@@ -1,0 +1,16 @@
+
+{
+  "name": "SIA Caribe - Inventarios",
+  "short_name": "SIA Caribe",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3421/3421111.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

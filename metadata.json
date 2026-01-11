@@ -1,0 +1,10 @@
+{
+  "name": "CARIBE - Control de Inventarios",
+  "short_name": "SIA Caribe",
+  "description": "Panel de control de inventarios con soporte offline.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "requestFramePermissions": []
+}
