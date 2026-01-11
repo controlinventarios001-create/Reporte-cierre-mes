@@ -36,18 +36,17 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [locations, setLocations] = useState<Location[]>([]);
   const [activeTab, setActiveTab] = useState<'matrix' | 'auxiliaries'>('matrix');
-  
-  // Initialize Supabase client only if env vars are present
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
+
+  // Initialize Supabase client
   const supabase = useMemo(() => {
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+      console.log("Supabase Client initialized with ENV vars.");
       return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     }
+    console.warn("Supabase credentials missing. Running in LOCAL MODE.");
     return null;
   }, []);
-
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>(
-    supabase ? 'idle' : 'error'
-  );
 
   const [filters, setFilters] = useState<Filters>(() => {
     const now = new Date();
@@ -78,15 +77,53 @@ const App = () => {
     }));
   }, []);
 
+  // REALTIME SUBSCRIPTION
+  useEffect(() => {
+    if (!supabase) return;
+
+    // Suscribirse a cambios en la tabla 'inventarios'
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'inventarios',
+          filter: `month=eq.${filters.month}` // Opcional: filtrar por mes para reducir tráfico
+        },
+        (payload) => {
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const newRow = payload.new as any;
+            if (newRow.year === filters.year) {
+              setLocations(prev => prev.map(loc => 
+                loc.id === newRow.location_id 
+                ? { 
+                    ...loc, 
+                    activities: newRow.activities, 
+                    observation: newRow.observation, 
+                    auxiliar: newRow.auxiliar 
+                  } 
+                : loc
+              ));
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, filters.month, filters.year]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
-    if (supabase) setSyncStatus('syncing');
+    setSyncStatus('syncing');
     
-    // Fallback Local
     const savedLocal = localStorage.getItem(currentKey);
     let currentLocations: Location[] = savedLocal ? JSON.parse(savedLocal) : generateDefaultLocations();
 
-    // Intento de carga remota si hay Supabase
     if (supabase) {
       try {
         const { data, error } = await supabase
@@ -98,7 +135,6 @@ const App = () => {
         if (error) throw error;
 
         if (data && data.length > 0) {
-          // Mapeamos los datos de DB a nuestro estado local para mantener coherencia con la estructura de la app
           const mergedLocations = currentLocations.map(loc => {
             const dbLoc = data.find(d => d.location_id === loc.id);
             if (dbLoc) {
@@ -114,10 +150,10 @@ const App = () => {
           currentLocations = mergedLocations;
           setSyncStatus('success');
         } else {
-            setSyncStatus('idle');
+          setSyncStatus('idle');
         }
       } catch (e) {
-        console.error("Sync Error:", e);
+        console.error("Supabase Load Error:", e);
         setSyncStatus('error');
       }
     }
@@ -130,24 +166,17 @@ const App = () => {
     loadData();
   }, [loadData]);
 
-  // Auto-save local
-  useEffect(() => {
-    if (!loading && locations.length > 0) {
-      localStorage.setItem(currentKey, JSON.stringify(locations));
-    }
-  }, [locations, loading, currentKey]);
-
+  // Sync state to handle remote update
   const handleUpdate = async (locationId: string, updates: Partial<Location>) => {
-    // 1. Update UI immediately (Optimistic update)
-    const updatedLocations = locations.map(loc => loc.id === locationId ? { ...loc, ...updates } : loc);
-    setLocations(updatedLocations);
+    const locToUpdate = locations.find(l => l.id === locationId);
+    if (!locToUpdate) return;
 
-    // 2. Sync to Supabase
+    // Apply updates locally first (Optimistic UI)
+    const nextLocState = { ...locToUpdate, ...updates };
+    setLocations(prev => prev.map(loc => loc.id === locationId ? nextLocState : loc));
+
     if (supabase) {
       setSyncStatus('syncing');
-      const finalLoc = updatedLocations.find(l => l.id === locationId);
-      if (!finalLoc) return;
-
       const compositeId = `${filters.month}-${filters.year}-${locationId}`;
 
       try {
@@ -158,23 +187,23 @@ const App = () => {
             month: filters.month,
             year: filters.year,
             location_id: locationId,
-            activities: finalLoc.activities,
-            observation: finalLoc.observation,
-            auxiliar: finalLoc.auxiliar,
+            activities: nextLocState.activities,
+            observation: nextLocState.observation,
+            auxiliar: nextLocState.auxiliar,
             updated_at: new Date().toISOString()
-          });
+          }, { onConflict: 'id' });
 
         if (error) throw error;
         setSyncStatus('success');
       } catch (e) {
-        console.error("Error al guardar en BD:", e);
+        console.error("Supabase Upsert Error:", e);
         setSyncStatus('error');
       }
     }
   };
 
   const handleResetAll = () => {
-    if (window.confirm("¿Reiniciar datos locales? Esto no borrará los datos en la base de datos remota.")) {
+    if (window.confirm("¿Reiniciar datos locales? Esto NO borrará la base de datos central.")) {
         localStorage.removeItem(currentKey);
         setLocations(generateDefaultLocations());
     }
@@ -231,17 +260,20 @@ const App = () => {
             <div>
               <h1 className="font-black text-xl lg:text-2xl tracking-tighter leading-none uppercase">CARIBE SAS</h1>
               <div className="flex items-center gap-2 mt-1.5">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">SIA • Inventarios</p>
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">SIA • Gestión</p>
                 <div className={`h-1.5 w-1.5 rounded-full ${syncStatus === 'success' ? 'bg-emerald-500' : syncStatus === 'error' ? 'bg-rose-500' : 'bg-slate-500 animate-pulse'}`} />
                 <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">
-                  {syncStatus === 'success' ? 'En Línea' : syncStatus === 'syncing' ? 'Sincronizando...' : syncStatus === 'error' && !supabase ? 'Modo Local' : 'Error Sync'}
+                  {syncStatus === 'success' ? 'En Línea' : syncStatus === 'syncing' ? 'Sincronizando...' : 'Modo Local'}
                 </span>
               </div>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-6">
-             <div className="text-right">
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">Status</p>
+          <div className="flex items-center gap-4">
+             <button onClick={loadData} title="Forzar Refresco" className="p-2 text-slate-400 hover:text-white transition-colors">
+                <AppIcon name="RefreshCw" size={18} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
+             </button>
+             <div className="hidden sm:block text-right">
+                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">Periodo</p>
                 <p className="text-[11px] font-bold text-slate-300 mt-1 uppercase">{filters.month} {filters.year}</p>
              </div>
           </div>
@@ -304,7 +336,7 @@ const App = () => {
                             {loading ? (
                                 <div className="py-24 text-center">
                                   <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-                                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Cargando base de datos...</p>
+                                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Sincronizando con la nube...</p>
                                 </div>
                             ) : filteredLocations.length === 0 ? (
                                 <div className="py-20 text-center text-slate-300 font-black uppercase tracking-widest text-lg">No hay resultados</div>
