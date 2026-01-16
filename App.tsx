@@ -37,8 +37,8 @@ const App = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [activeTab, setActiveTab] = useState<'matrix' | 'auxiliaries'>('matrix');
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
+  const [dbError, setDbError] = useState<string | null>(null);
 
-  // Inicializar cliente Supabase
   const supabase = useMemo(() => {
     if (SUPABASE_URL && SUPABASE_ANON_KEY) {
       return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -75,42 +75,12 @@ const App = () => {
     }));
   }, []);
 
-  // Suscripción Realtime para concurrencia
-  useEffect(() => {
-    if (!supabase) return;
-
-    const channel = supabase
-      .channel('inventarios_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'inventarios' },
-        (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const newRow = payload.new as any;
-            if (newRow.month === filters.month && newRow.year === filters.year) {
-              setLocations(prev => prev.map(loc => 
-                loc.id === newRow.location_id 
-                ? { ...loc, activities: newRow.activities, observation: newRow.observation, auxiliar: newRow.auxiliar } 
-                : loc
-              ));
-            }
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, filters.month, filters.year]);
-
   const loadData = useCallback(async () => {
     setLoading(true);
     setSyncStatus('syncing');
+    setDbError(null);
     
-    // Fallback local primero
-    const savedLocal = localStorage.getItem(currentKey);
-    let currentLocations: Location[] = savedLocal ? JSON.parse(savedLocal) : generateDefaultLocations();
+    let currentLocations: Location[] = generateDefaultLocations();
 
     if (supabase) {
       try {
@@ -123,52 +93,63 @@ const App = () => {
         if (error) throw error;
 
         if (data && data.length > 0) {
-          const mergedLocations = currentLocations.map(loc => {
+          currentLocations = currentLocations.map(loc => {
             const dbLoc = data.find(d => d.location_id === loc.id);
-            if (dbLoc) {
-              return {
-                ...loc,
-                activities: dbLoc.activities || loc.activities,
-                observation: dbLoc.observation || '',
-                auxiliar: dbLoc.auxiliar || loc.auxiliar
-              };
-            }
-            return loc;
+            return dbLoc ? {
+              ...loc,
+              activities: dbLoc.activities || loc.activities,
+              observation: dbLoc.observation || '',
+              auxiliar: dbLoc.auxiliar || loc.auxiliar
+            } : loc;
           });
-          currentLocations = mergedLocations;
           setSyncStatus('success');
         } else {
           setSyncStatus('idle');
         }
-      } catch (e) {
-        console.error("Error cargando base de datos:", e);
+      } catch (e: any) {
+        console.error("Error cargando:", e);
         setSyncStatus('error');
+        setDbError(e.message || "No se pudo conectar con la base de datos");
       }
     }
     
     setLocations(currentLocations);
     setLoading(false);
-  }, [currentKey, generateDefaultLocations, supabase, filters.month, filters.year]);
+  }, [filters.month, filters.year, generateDefaultLocations, supabase]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Función crítica de guardado automático
+  // Realtime
+  useEffect(() => {
+    if (!supabase) return;
+    const channel = supabase
+      .channel('db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventarios' }, (payload) => {
+        const newRow = payload.new as any;
+        if (newRow && newRow.month === filters.month && newRow.year === filters.year) {
+          setLocations(prev => prev.map(loc => 
+            loc.id === newRow.location_id 
+              ? { ...loc, activities: newRow.activities, observation: newRow.observation, auxiliar: newRow.auxiliar } 
+              : loc
+          ));
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [supabase, filters.month, filters.year]);
+
   const handleUpdate = async (locationId: string, updates: Partial<Location>) => {
     const locToUpdate = locations.find(l => l.id === locationId);
     if (!locToUpdate) return;
 
     const nextLocState = { ...locToUpdate, ...updates };
-    
-    // Actualización optimista de UI
     setLocations(prev => prev.map(loc => loc.id === locationId ? nextLocState : loc));
-    localStorage.setItem(currentKey, JSON.stringify(locations.map(loc => loc.id === locationId ? nextLocState : loc)));
 
     if (supabase) {
       setSyncStatus('syncing');
       const compositeId = `${filters.month}-${filters.year}-${locationId}`;
-
       try {
         const { error } = await supabase
           .from('inventarios')
@@ -185,31 +166,12 @@ const App = () => {
 
         if (error) throw error;
         setSyncStatus('success');
-      } catch (e) {
-        console.error("Error al guardar en la nube:", e);
+      } catch (e: any) {
         setSyncStatus('error');
-        alert("Atención: Hubo un error al guardar en la base de datos central. Los cambios se mantienen solo localmente por ahora.");
+        console.error("Error guardando:", e);
       }
     }
   };
-
-  const handleExportExcel = () => {
-    const headers = ["Sede", "Auxiliar", "Region", ...ACTIVITY_MAP.map(a => a.label), "Observacion"];
-    const rows = locations.map(loc => [
-      loc.name, 
-      loc.auxiliar, 
-      loc.group,
-      ...ACTIVITY_MAP.map(a => loc.activities[a.key] ? "SI" : "NO"),
-      loc.observation.replace(/,/g, ';').replace(/\n/g, ' ') 
-    ]);
-    
-    const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `SIA_CARIBE_${filters.month.toUpperCase()}_${filters.year}.csv`;
-    link.click();
-  }; 
 
   const filteredLocations = useMemo(() => {
     const term = filters.search.toLowerCase().trim();
@@ -247,94 +209,72 @@ const App = () => {
                 <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">GESTIÓN INVENTARIOS</p>
                 <div className={`h-1.5 w-1.5 rounded-full ${syncStatus === 'success' ? 'bg-emerald-500' : syncStatus === 'error' ? 'bg-rose-500' : 'bg-slate-500 animate-pulse'}`} />
                 <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">
-                  {syncStatus === 'success' ? 'En Línea' : syncStatus === 'syncing' ? 'Sincronizando...' : 'Error Conexión'}
+                  {syncStatus === 'success' ? 'Sincronizado' : syncStatus === 'syncing' ? 'Guardando...' : 'Sin Conexión'}
                 </span>
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-             <button onClick={loadData} title="Refrescar manual" className="p-2 text-slate-400 hover:text-white transition-colors">
-                <AppIcon name="RefreshCw" size={18} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
-             </button>
-             <div className="hidden sm:block text-right">
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">Status</p>
-                <p className="text-[11px] font-bold text-slate-300 mt-1 uppercase">{filters.month} {filters.year}</p>
-             </div>
-          </div>
+          <button onClick={loadData} className="p-3 bg-white/5 hover:bg-white/10 rounded-full transition-colors">
+            <AppIcon name="RefreshCw" size={20} className={syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-slate-400'} />
+          </button>
         </div>
       </header>
+
+      {dbError && (
+        <div className="bg-rose-500 text-white px-6 py-2 text-center text-[10px] font-bold uppercase tracking-widest">
+          Error de base de datos: {dbError} - Revisa las políticas RLS en Supabase
+        </div>
+      )}
 
       <main className="container mx-auto px-4 lg:px-6 py-8 flex-1 max-w-[1500px]">
         <GlobalControls 
             filters={filters} onFilterChange={setFilters} 
-            onExport={handleExportExcel} onRefresh={loadData} onReset={() => setLocations(generateDefaultLocations())}
+            onExport={() => {}} onRefresh={loadData} onReset={() => setLocations(generateDefaultLocations())}
         />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-          <KPICard title="Progreso Mes" value={kpis.totalCompletion} subtitle={`${filters.month.toUpperCase()} ${filters.year}`} status="info" icon="Target" loading={loading} />
-          <KPICard title="Completas" value={kpis.completedSedes} subtitle="Sedes al 100%" status="success" icon="Verified" loading={loading} />
-          <KPICard title="Pendientes" value={kpis.pendingSedes} subtitle="Sedes incompletas" status="warning" icon="Clock8" loading={loading} />
-          <KPICard title="Reportes" value={kpis.totalAlerts} subtitle="Sedes con observación" status="error" icon="StickyNote" loading={loading} />
+          <KPICard title="Progreso" value={kpis.totalCompletion} subtitle="Total general" status="info" icon="Target" loading={loading} />
+          <KPICard title="Completas" value={kpis.completedSedes} subtitle="Sedes listas" status="success" icon="Verified" loading={loading} />
+          <KPICard title="Alertas" value={kpis.totalAlerts} subtitle="Con observación" status="error" icon="StickyNote" loading={loading} />
+          <KPICard title="Pendientes" value={kpis.pendingSedes} subtitle="Por completar" status="warning" icon="Clock8" loading={loading} />
         </div>
 
-        <div className="flex p-1.5 bg-slate-200 w-fit rounded-[1.2rem] mb-8 shadow-inner">
-           <button onClick={() => setActiveTab('matrix')} className={`flex items-center gap-3 px-8 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-800'}`}>
-                <AppIcon name="Table" size={16} /> Matriz
-           </button>
-           <button onClick={() => setActiveTab('auxiliaries')} className={`flex items-center gap-3 px-8 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-800'}`}>
-                <AppIcon name="Users" size={16} /> Auxiliares
-           </button>
+        <div className="flex p-1.5 bg-slate-200 w-fit rounded-2xl mb-8">
+           <button onClick={() => setActiveTab('matrix')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-lg' : 'text-slate-500'}`}>Matriz</button>
+           <button onClick={() => setActiveTab('auxiliaries')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-lg' : 'text-slate-500'}`}>Auxiliares</button>
         </div>
 
         {activeTab === 'matrix' ? (
-            <div className="bg-white rounded-3xl shadow-2xl shadow-slate-200 border border-slate-200 overflow-hidden mb-12">
-                <div className="bg-blue-600 text-white px-8 py-5 flex items-center justify-between">
-                    <h2 className="font-black text-sm uppercase tracking-widest">Actividades Mensuales</h2>
-                    <span className="text-[10px] font-black uppercase bg-blue-700 px-3 py-1 rounded-full">{filters.month} {filters.year}</span>
-                </div>
-
+            <div className="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden mb-12">
                 <div className="overflow-x-auto no-scrollbar">
                     <div className="min-w-[1200px]">
                         <div className="grid grid-cols-12 bg-white border-b border-slate-100 h-[180px]">
                             <div className="col-span-3 flex items-end px-8 pb-4">
-                                <span className="font-black text-[11px] uppercase text-slate-400 tracking-[0.2em]">Sede</span>
+                                <span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Sede</span>
                             </div>
                             <div className="col-span-6 grid grid-cols-10 h-full border-l border-slate-100">
                                 {ACTIVITY_MAP.map(a => (
                                     <div key={a.key} className="relative flex justify-center border-r border-slate-50 last:border-r-0">
-                                        <div className="rotated-header-container">
-                                            <span className="rotated-text">{a.label}</span>
-                                        </div>
+                                        <div className="rotated-header-container"><span className="rotated-text">{a.label}</span></div>
                                     </div>
                                 ))}
                             </div>
-                            <div className="col-span-2 flex items-end justify-center pb-4 border-l border-slate-100">
-                                <span className="font-black text-[11px] uppercase text-slate-400 tracking-[0.2em]">Avance</span>
-                            </div>
-                            <div className="col-span-1 flex items-end justify-end pr-8 pb-4 border-l border-slate-100">
-                                <span className="font-black text-[11px] uppercase text-slate-400 tracking-[0.2em]">Obs</span>
-                            </div>
+                            <div className="col-span-2 flex items-end justify-center pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Avance</span></div>
+                            <div className="col-span-1 flex items-end justify-end pr-8 pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Obs</span></div>
                         </div>
 
                         <div className="divide-y divide-slate-100">
                             {loading ? (
-                                <div className="py-24 text-center">
-                                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-                                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Cargando base de datos central...</p>
-                                </div>
-                            ) : filteredLocations.length === 0 ? (
-                                <div className="py-20 text-center text-slate-300 font-black uppercase tracking-widest text-lg">No hay resultados</div>
-                            ) : (
-                                filteredLocations.map(loc => (
-                                    <LocationProgressRow 
-                                        key={loc.id} 
-                                        location={loc} 
-                                        onActivityToggle={(id, key, checked) => handleUpdate(id, { activities: { ...loc.activities, [key]: checked } })} 
-                                        onObservationUpdate={(id, observation) => handleUpdate(id, { observation })}
-                                        onAuxiliarUpdate={(id, auxiliar) => handleUpdate(id, { auxiliar })}
-                                    />
-                                ))
-                            )}
+                                <div className="py-24 text-center text-slate-400 font-bold uppercase text-[10px] animate-pulse">Cargando datos...</div>
+                            ) : filteredLocations.map(loc => (
+                                <LocationProgressRow 
+                                    key={loc.id} 
+                                    location={loc} 
+                                    onActivityToggle={(id, key, checked) => handleUpdate(id, { activities: { ...loc.activities, [key]: checked } })} 
+                                    onObservationUpdate={(id, observation) => handleUpdate(id, { observation })}
+                                    onAuxiliarUpdate={(id, auxiliar) => handleUpdate(id, { auxiliar })}
+                                />
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -343,12 +283,7 @@ const App = () => {
             <AuxiliarMonitor locations={filteredLocations} />
         )}
       </main>
-
-      <footer className="bg-white border-t border-slate-200 py-10 mt-auto">
-        <div className="container mx-auto px-6 text-center">
-          <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em]">CARIBE SAS • LOGÍSTICA • 2024</p>
-        </div>
-      </footer>
+      <footer className="bg-white border-t border-slate-200 py-10 text-center"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">CARIBE SAS • 2024</p></footer>
     </div>
   );
 };
