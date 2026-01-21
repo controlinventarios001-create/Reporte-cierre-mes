@@ -231,7 +231,7 @@ const App = () => {
               <AppIcon name="LayoutGrid" size={24} className="text-white" />
             </div>
             <div>
-              <h1 className="font-black text-lg lg:text-xl tracking-tighter uppercase leading-none">CARIBE SAS</h1>
+              <h1 className="font-black text-lg lg:text-xl tracking-tighter uppercase leading-none">CARIBE SUPERMERCADOS SAS</h1>
               <div className="flex items-center gap-2 mt-1.5">
                 <div className={`h-2 w-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-rose-500 animate-pulse'}`} />
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
@@ -320,8 +320,8 @@ const App = () => {
       </main>
       <footer className="bg-white border-t border-slate-200 py-12 text-center">
         <div className="flex flex-col items-center gap-2">
-           <span className="text-[10px] font-black text-slate-300 tracking-[0.5em] uppercase">CARIBE SAS • CONTROL DE INVENTARIOS</span>
-           <span className="text-[8px] font-bold text-slate-200 uppercase">Tecnología de Sincronización Real-Time v2.0</span>
+           <span className="text-[10px] font-black text-slate-300 tracking-[0.5em] uppercase">CARIBE SUPERMERCADOS SAS • CONTROL DE INVENTARIOS</span>
+           <span className="text-[8px] font-bold text-slate-200 uppercase">Creado por Julio Giraldo v2.0</span>
         </div>
       </footer>
     </div>
