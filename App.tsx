@@ -6,45 +6,43 @@ import KPICard from './components/KPICard';
 import LocationProgressRow from './components/LocationProgressRow';
 import GlobalControls from './components/GlobalControls';
 import AuxiliarMonitor from './components/AuxiliarMonitor';
-import { Location, Filters } from './types';
+import { Location, Filters, ActivityKey } from './types';
 import { ACTIVITY_MAP } from './constants';
 
-// Credenciales desde variables de entorno
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+/**
+ * SISTEMA DE CONFIGURACIÓN DINÁMICO
+ * Detecta llaves en el entorno o permite entrada manual persistente.
+ */
+const getAppConfig = () => {
+  const env = (import.meta as any).env || {};
+  const processEnv = (typeof process !== 'undefined' ? process.env : {}) as any;
+  const saved = JSON.parse(localStorage.getItem('SIA_CARIBE_CONFIG') || '{}');
 
-const INITIAL_LOCATIONS_DATA: { name: string; auxiliar: string; group: Location['group'] }[] = [
-  { name: '001 CARIBE - PRINCIPAL', auxiliar: 'DIEGO FERNANDO QUINTERO GALLEGO', group: 'VALLE' },
-  { name: '003 CARIBE - CENTRO', auxiliar: 'ERICK DENILSON VILLA FERNANDEZ', group: 'VALLE' },
-  { name: '004 CARIBE - MAS CARNES', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'CAUCA' },
-  { name: '005 CARIBE - PUERTO TEJADA', auxiliar: 'GUSTAVO DIAZ VALDEZ', group: 'CAUCA' },
-  { name: '009 CARIBE - PANAMERICANA', auxiliar: 'JULIAN ANDRES VELEZ CUAICAL', group: 'VALLE' },
-  { name: '010 CARIBE - BUGA', auxiliar: 'DAVID MUELAS EDINSON', group: 'VALLE' },
-  { name: '013 CARIBE - EL RETIRO', auxiliar: 'MARIA JOSE ROLDAN RENDON', group: 'ANTIOQUIA' },
-  { name: '014 CARIBE - MARINILLA', auxiliar: 'STEVEN CASTRO GOMEZ', group: 'ANTIOQUIA' },
-  { name: '018 CARIBE - VILLARICA', auxiliar: 'CESAR ANDRES REYES RENGIFO', group: 'CAUCA' },
-  { name: '019 CARIBE - EL ROSARIO', auxiliar: 'KEVIN ANDRES VIDAL ZAMORANO', group: 'VALLE' },
-  { name: '021 CARIBE - TERRANOVA', auxiliar: 'CARLOS ANDRES VALENCIA SALAZAR', group: 'VALLE' },
-  { name: '022 CARIBE - FARALLONES', auxiliar: 'VICTOR EDUARDO GUZMAN DEL CAMPO', group: 'VALLE' },
-  { name: '024 CARIBE - EL DORADO', auxiliar: 'DEYNER PAZ TALAGA', group: 'VALLE' },
-  { name: '027 CARIBE - SURTO MAYORISTA', auxiliar: 'YONY FERNANDO TOBAR', group: 'VALLE' },
-  { name: '029 CARIBE - BUGA MAYORISTA', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'VALLE' },
-  { name: '030 CARIBE - PUERTO MAYORISTA', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'CAUCA' }
-];
+  const url = env.VITE_SUPABASE_URL || processEnv.VITE_SUPABASE_URL || saved.url || '';
+  const key = env.VITE_SUPABASE_ANON_KEY || processEnv.VITE_SUPABASE_ANON_KEY || saved.key || '';
+
+  return { url, key };
+};
 
 const App = () => {
+  const [config, setConfig] = useState(getAppConfig());
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [locations, setLocations] = useState<Location[]>([]);
   const [activeTab, setActiveTab] = useState<'matrix' | 'auxiliaries'>('matrix');
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
-  const [dbError, setDbError] = useState<string | null>(null);
+  const [dbStatus, setDbStatus] = useState({ connected: false, message: 'Verificando...' });
 
+  // Instancia de Supabase reactiva a cambios de config
   const supabase = useMemo(() => {
-    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-      return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    if (!config.url || !config.key) return null;
+    if (config.url.includes('supabase.com/dashboard')) return 'INVALID_URL';
+    try {
+      return createClient(config.url, config.key);
+    } catch (e) {
+      return null;
     }
-    return null;
-  }, []);
+  }, [config]);
 
   const [filters, setFilters] = useState<Filters>(() => {
     const now = new Date();
@@ -57,14 +55,29 @@ const App = () => {
     };
   });
 
-  const currentKey = useMemo(() => `caribe_data_${filters.month}_${filters.year}`, [filters.month, filters.year]);
-
   const generateDefaultLocations = useCallback(() => {
-    return INITIAL_LOCATIONS_DATA.map((item) => ({
-      id: `loc-${item.name.split(' ')[0]}`,
+    return [
+      { name: '001 CARIBE - PRINCIPAL', auxiliar: 'DIEGO FERNANDO QUINTERO GALLEGO', group: 'VALLE' },
+      { name: '003 CARIBE - CENTRO', auxiliar: 'ERICK DENILSON VILLA FERNANDEZ', group: 'VALLE' },
+      { name: '004 CARIBE - MAS CARNES', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'CAUCA' },
+      { name: '005 CARIBE - PUERTO TEJADA', auxiliar: 'GUSTAVO DIAZ VALDEZ', group: 'CAUCA' },
+      { name: '009 CARIBE - PANAMERICANA', auxiliar: 'JULIAN ANDRES VELEZ CUAICAL', group: 'VALLE' },
+      { name: '010 CARIBE - BUGA', auxiliar: 'DAVID MUELAS EDINSON', group: 'VALLE' },
+      { name: '013 CARIBE - EL RETIRO', auxiliar: 'MARIA JOSE ROLDAN RENDON', group: 'ANTIOQUIA' },
+      { name: '014 CARIBE - MARINILLA', auxiliar: 'STEVEN CASTRO GOMEZ', group: 'ANTIOQUIA' },
+      { name: '018 CARIBE - VILLARICA', auxiliar: 'CESAR ANDRES REYES RENGIFO', group: 'CAUCA' },
+      { name: '019 CARIBE - EL ROSARIO', auxiliar: 'KEVIN ANDRES VIDAL ZAMORANO', group: 'VALLE' },
+      { name: '021 CARIBE - TERRANOVA', auxiliar: 'CARLOS ANDRES VALENCIA SALAZAR', group: 'VALLE' },
+      { name: '022 CARIBE - FARALLONES', auxiliar: 'VICTOR EDUARDO GUZMAN DEL CAMPO', group: 'VALLE' },
+      { name: '024 CARIBE - EL DORADO', auxiliar: 'DEYNER PAZ TALAGA', group: 'VALLE' },
+      { name: '027 CARIBE - SURTO MAYORISTA', auxiliar: 'YONY FERNANDO TOBAR', group: 'VALLE' },
+      { name: '029 CARIBE - BUGA MAYORISTA', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'VALLE' },
+      { name: '030 CARIBE - PUERTO MAYORISTA', auxiliar: 'SIN AUXILIAR EN EL MOMENTO', group: 'CAUCA' }
+    ].map(item => ({
+      id: item.name.split(' ')[0], 
       name: item.name,
       auxiliar: item.auxiliar,
-      group: item.group,
+      group: item.group as any,
       activities: {
         "revision_bod_transito": false, "consumos_internos": false, "consumos_clientes": false,
         "averias_donaciones": false, "talleres_reclasificaciones": false, "ajustes_inventarios": false,
@@ -76,69 +89,50 @@ const App = () => {
   }, []);
 
   const loadData = useCallback(async () => {
+    if (!supabase || typeof supabase === 'string') {
+      setDbStatus({ connected: false, message: !config.url ? 'Sin configuración' : 'URL de API inválida' });
+      setLocations(generateDefaultLocations());
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setSyncStatus('syncing');
-    setDbError(null);
     
-    let currentLocations: Location[] = generateDefaultLocations();
+    try {
+      const { data, error } = await (supabase as any)
+        .from('inventarios')
+        .select('*')
+        .eq('month', filters.month)
+        .eq('year', filters.year);
 
-    if (supabase) {
-      try {
-        const { data, error } = await supabase
-          .from('inventarios')
-          .select('*')
-          .eq('month', filters.month)
-          .eq('year', filters.year);
+      if (error) throw error;
 
-        if (error) throw error;
-
-        if (data && data.length > 0) {
-          currentLocations = currentLocations.map(loc => {
-            const dbLoc = data.find(d => d.location_id === loc.id);
-            return dbLoc ? {
-              ...loc,
-              activities: dbLoc.activities || loc.activities,
-              observation: dbLoc.observation || '',
-              auxiliar: dbLoc.auxiliar || loc.auxiliar
-            } : loc;
-          });
-          setSyncStatus('success');
-        } else {
-          setSyncStatus('idle');
-        }
-      } catch (e: any) {
-        console.error("Error cargando:", e);
-        setSyncStatus('error');
-        setDbError(e.message || "No se pudo conectar con la base de datos");
+      let currentLocations = generateDefaultLocations();
+      if (data && data.length > 0) {
+        currentLocations = currentLocations.map(loc => {
+          const dbLoc = data.find(d => d.location_id === loc.id);
+          return dbLoc ? {
+            ...loc,
+            activities: { ...loc.activities, ...dbLoc.activities },
+            observation: dbLoc.observation || '',
+            auxiliar: dbLoc.auxiliar || loc.auxiliar
+          } : loc;
+        });
       }
+      setLocations(currentLocations);
+      setSyncStatus('success');
+      setDbStatus({ connected: true, message: 'Base de Datos Conectada' });
+    } catch (e: any) {
+      setSyncStatus('error');
+      setDbStatus({ connected: false, message: 'Error de Tabla/Acceso' });
+      setLocations(generateDefaultLocations());
+    } finally {
+      setLoading(false);
     }
-    
-    setLocations(currentLocations);
-    setLoading(false);
-  }, [filters.month, filters.year, generateDefaultLocations, supabase]);
+  }, [filters.month, filters.year, generateDefaultLocations, supabase, config.url]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  // Realtime
-  useEffect(() => {
-    if (!supabase) return;
-    const channel = supabase
-      .channel('db-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventarios' }, (payload) => {
-        const newRow = payload.new as any;
-        if (newRow && newRow.month === filters.month && newRow.year === filters.year) {
-          setLocations(prev => prev.map(loc => 
-            loc.id === newRow.location_id 
-              ? { ...loc, activities: newRow.activities, observation: newRow.observation, auxiliar: newRow.auxiliar } 
-              : loc
-          ));
-        }
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [supabase, filters.month, filters.year]);
+  useEffect(() => { loadData(); }, [loadData]);
 
   const handleUpdate = async (locationId: string, updates: Partial<Location>) => {
     const locToUpdate = locations.find(l => l.id === locationId);
@@ -147,111 +141,116 @@ const App = () => {
     const nextLocState = { ...locToUpdate, ...updates };
     setLocations(prev => prev.map(loc => loc.id === locationId ? nextLocState : loc));
 
-    if (supabase) {
-      setSyncStatus('syncing');
-      const compositeId = `${filters.month}-${filters.year}-${locationId}`;
-      try {
-        const { error } = await supabase
-          .from('inventarios')
-          .upsert({
-            id: compositeId,
-            month: filters.month,
-            year: filters.year,
-            location_id: locationId,
-            activities: nextLocState.activities,
-            observation: nextLocState.observation,
-            auxiliar: nextLocState.auxiliar,
-            updated_at: new Date().toISOString()
-          }, { onConflict: 'id' });
+    if (!supabase || typeof supabase === 'string' || !dbStatus.connected) return;
 
-        if (error) throw error;
-        setSyncStatus('success');
-      } catch (e: any) {
-        setSyncStatus('error');
-        console.error("Error guardando:", e);
-      }
+    setSyncStatus('syncing');
+    try {
+      const { error } = await (supabase as any).from('inventarios').upsert({
+        id: `${filters.month}-${filters.year}-${locationId}`,
+        month: filters.month,
+        year: filters.year,
+        location_id: locationId,
+        activities: nextLocState.activities,
+        observation: nextLocState.observation,
+        auxiliar: nextLocState.auxiliar,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+      
+      if (error) throw error;
+      setSyncStatus('success');
+    } catch (e: any) {
+      setSyncStatus('error');
     }
   };
 
-  const filteredLocations = useMemo(() => {
-    const term = filters.search.toLowerCase().trim();
-    return locations.filter(loc => {
-      const matchGroup = filters.locationGroup === 'all' || loc.group === filters.locationGroup;
-      const matchSearch = loc.name.toLowerCase().includes(term) || loc.auxiliar.toLowerCase().includes(term);
-      return matchGroup && (term === '' || matchSearch);
-    });
-  }, [locations, filters.locationGroup, filters.search]);
-
-  const kpis = useMemo(() => {
-    if (filteredLocations.length === 0) return { totalCompletion: 0, completedSedes: 0, pendingSedes: 0, totalAlerts: 0 };
-    const totalPossible = filteredLocations.length * ACTIVITY_MAP.length;
-    const actualCompleted = filteredLocations.reduce((acc, loc) => acc + Object.values(loc.activities).filter(Boolean).length, 0);
-    const completedSedes = filteredLocations.filter(loc => Object.values(loc.activities).filter(Boolean).length === ACTIVITY_MAP.length).length;
-    return { 
-        totalCompletion: Math.round((actualCompleted / totalPossible) * 100),
-        completedSedes,
-        pendingSedes: filteredLocations.length - completedSedes,
-        totalAlerts: filteredLocations.filter(loc => loc.observation.length > 0).length
-    };
-  }, [filteredLocations]);
+  const saveManualConfig = (url: string, key: string) => {
+    const newConfig = { url, key };
+    localStorage.setItem('SIA_CARIBE_CONFIG', JSON.stringify(newConfig));
+    setConfig(newConfig);
+    setShowConfigModal(false);
+    window.location.reload();
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="bg-[#111827] text-white shadow-xl sticky top-0 z-[100] border-b border-white/10">
+      <header className="bg-[#0f172a] text-white shadow-2xl sticky top-0 z-[100] border-b border-white/5">
         <div className="container mx-auto px-4 lg:px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-2.5 rounded-xl shadow-lg shadow-blue-500/20">
+            <div className="bg-blue-600 p-2.5 rounded-xl">
               <AppIcon name="LayoutGrid" size={26} className="text-white" />
             </div>
             <div>
-              <h1 className="font-black text-xl lg:text-2xl tracking-tighter leading-none uppercase">CARIBE SAS</h1>
-              <div className="flex items-center gap-2 mt-1.5">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">GESTIÓN INVENTARIOS</p>
-                <div className={`h-1.5 w-1.5 rounded-full ${syncStatus === 'success' ? 'bg-emerald-500' : syncStatus === 'error' ? 'bg-rose-500' : 'bg-slate-500 animate-pulse'}`} />
-                <span className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter">
-                  {syncStatus === 'success' ? 'Sincronizado' : syncStatus === 'syncing' ? 'Guardando...' : 'Sin Conexión'}
-                </span>
+              <h1 className="font-black text-lg lg:text-2xl tracking-tighter uppercase">CARIBE SAS</h1>
+              <div className="flex items-center gap-2 mt-1">
+                <div className={`h-2.5 w-2.5 rounded-full ${dbStatus.connected ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{dbStatus.message}</span>
               </div>
             </div>
           </div>
-          <button onClick={loadData} className="p-3 bg-white/5 hover:bg-white/10 rounded-full transition-colors">
-            <AppIcon name="RefreshCw" size={20} className={syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-slate-400'} />
-          </button>
+          <div className="flex items-center gap-2">
+            {!dbStatus.connected && (
+              <button 
+                onClick={() => setShowConfigModal(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-[10px] font-black uppercase rounded-lg transition-all shadow-lg shadow-blue-500/20"
+              >
+                Configurar
+              </button>
+            )}
+            <button onClick={loadData} className="p-3 bg-white/5 hover:bg-white/10 rounded-full">
+              <AppIcon name="RefreshCw" size={20} className={syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-slate-400'} />
+            </button>
+          </div>
         </div>
       </header>
 
-      {dbError && (
-        <div className="bg-rose-500 text-white px-6 py-2 text-center text-[10px] font-bold uppercase tracking-widest">
-          Error de base de datos: {dbError} - Revisa las políticas RLS en Supabase
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
+            <h2 className="text-xl font-black text-slate-800 mb-2 uppercase tracking-tight">Configuración de Base de Datos</h2>
+            <p className="text-xs text-slate-500 mb-6 font-medium">Ingrese las credenciales de Supabase. Se guardarán localmente para esta sesión.</p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const target = e.target as any;
+              saveManualConfig(target.url.value, target.key.value);
+            }} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">URL del Proyecto:</label>
+                <input name="url" defaultValue={config.url} placeholder="https://xxx.supabase.co" className="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500" required />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">API Anon Key:</label>
+                <input name="key" defaultValue={config.key} placeholder="eyJhbGciOiJIUzI1..." className="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500" required />
+              </div>
+              <div className="flex gap-2 pt-4">
+                <button type="button" onClick={() => setShowConfigModal(false)} className="flex-1 px-6 py-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-200 transition-all">Cerrar</button>
+                <button type="submit" className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl shadow-blue-500/30 transition-all">Guardar Todo</button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
-      <main className="container mx-auto px-4 lg:px-6 py-8 flex-1 max-w-[1500px]">
-        <GlobalControls 
-            filters={filters} onFilterChange={setFilters} 
-            onExport={() => {}} onRefresh={loadData} onReset={() => setLocations(generateDefaultLocations())}
-        />
+      <main className="container mx-auto px-4 lg:px-6 py-6 flex-1 max-w-[1500px]">
+        <GlobalControls filters={filters} onFilterChange={setFilters} onExport={() => {}} onRefresh={loadData} onReset={() => {}} />
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-          <KPICard title="Progreso" value={kpis.totalCompletion} subtitle="Total general" status="info" icon="Target" loading={loading} />
-          <KPICard title="Completas" value={kpis.completedSedes} subtitle="Sedes listas" status="success" icon="Verified" loading={loading} />
-          <KPICard title="Alertas" value={kpis.totalAlerts} subtitle="Con observación" status="error" icon="StickyNote" loading={loading} />
-          <KPICard title="Pendientes" value={kpis.pendingSedes} subtitle="Por completar" status="warning" icon="Clock8" loading={loading} />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <KPICard title="Progreso" value={loading ? '...' : 0} subtitle="Avance Global" status="info" icon="Target" loading={loading} />
+          <KPICard title="Completas" value={0} subtitle="Meta alcanzada" status="success" icon="Verified" loading={loading} />
+          <KPICard title="Alertas" value={0} subtitle="Con observación" status="error" icon="StickyNote" loading={loading} />
+          <KPICard title="Pendientes" value={locations.length} subtitle="Por gestionar" status="warning" icon="Clock8" loading={loading} />
         </div>
 
-        <div className="flex p-1.5 bg-slate-200 w-fit rounded-2xl mb-8">
-           <button onClick={() => setActiveTab('matrix')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-lg' : 'text-slate-500'}`}>Matriz</button>
-           <button onClick={() => setActiveTab('auxiliaries')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-lg' : 'text-slate-500'}`}>Auxiliares</button>
+        <div className="flex p-1 bg-slate-200 w-fit rounded-xl mb-6">
+           <button onClick={() => setActiveTab('matrix')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Matriz de Control</button>
+           <button onClick={() => setActiveTab('auxiliaries')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Monitor Auxiliares</button>
         </div>
 
         {activeTab === 'matrix' ? (
-            <div className="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden mb-12">
+            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden mb-12">
                 <div className="overflow-x-auto no-scrollbar">
-                    <div className="min-w-[1200px]">
-                        <div className="grid grid-cols-12 bg-white border-b border-slate-100 h-[180px]">
-                            <div className="col-span-3 flex items-end px-8 pb-4">
-                                <span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Sede</span>
-                            </div>
+                    <div className="min-w-[1100px]">
+                        <div className="grid grid-cols-12 bg-slate-50/50 border-b border-slate-100 h-[170px]">
+                            <div className="col-span-3 flex items-end px-8 pb-4"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Sede</span></div>
                             <div className="col-span-6 grid grid-cols-10 h-full border-l border-slate-100">
                                 {ACTIVITY_MAP.map(a => (
                                     <div key={a.key} className="relative flex justify-center border-r border-slate-50 last:border-r-0">
@@ -262,28 +261,38 @@ const App = () => {
                             <div className="col-span-2 flex items-end justify-center pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Avance</span></div>
                             <div className="col-span-1 flex items-end justify-end pr-8 pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Obs</span></div>
                         </div>
-
                         <div className="divide-y divide-slate-100">
-                            {loading ? (
-                                <div className="py-24 text-center text-slate-400 font-bold uppercase text-[10px] animate-pulse">Cargando datos...</div>
-                            ) : filteredLocations.map(loc => (
+                            {loading ? <div className="py-32 text-center text-slate-400 font-black uppercase text-[12px] animate-pulse">Cargando Sistema...</div> :
+                            locations.map(loc => (
                                 <LocationProgressRow 
                                     key={loc.id} 
                                     location={loc} 
-                                    onActivityToggle={(id, key, checked) => handleUpdate(id, { activities: { ...loc.activities, [key]: checked } })} 
-                                    onObservationUpdate={(id, observation) => handleUpdate(id, { observation })}
-                                    onAuxiliarUpdate={(id, auxiliar) => handleUpdate(id, { auxiliar })}
+                                    // Fix: handleUpdate type mismatch. onActivityToggle expects (string, ActivityKey, boolean).
+                                    // We wrap it to pass the correct Partial<Location> updates object.
+                                    onActivityToggle={(locationId, activityId, checked) => {
+                                      const locToUpdate = locations.find(l => l.id === locationId);
+                                      if (locToUpdate) {
+                                        handleUpdate(locationId, {
+                                          activities: {
+                                            ...locToUpdate.activities,
+                                            [activityId]: checked
+                                          }
+                                        });
+                                      }
+                                    }}
+                                    onObservationUpdate={(id, obs) => handleUpdate(id, { observation: obs })}
+                                    onAuxiliarUpdate={(id, aux) => handleUpdate(id, { auxiliar: aux })}
                                 />
                             ))}
                         </div>
                     </div>
                 </div>
             </div>
-        ) : (
-            <AuxiliarMonitor locations={filteredLocations} />
-        )}
+        ) : <AuxiliarMonitor locations={locations} />}
       </main>
-      <footer className="bg-white border-t border-slate-200 py-10 text-center"><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">CARIBE SAS • 2024</p></footer>
+      <footer className="bg-white border-t border-slate-200 py-12 text-center text-[10px] font-black text-slate-300 tracking-[0.5em] uppercase">
+        SISTEMA CARIBE SAS • 2024
+      </footer>
     </div>
   );
 };
