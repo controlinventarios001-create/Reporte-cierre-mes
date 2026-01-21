@@ -21,15 +21,6 @@ export interface Location {
   observation: string;
 }
 
-export interface Alert {
-  id: string;
-  type: 'delayed' | 'anomaly' | 'completed';
-  title: string;
-  message: string;
-  location: string;
-  timestamp: Date;
-}
-
 export interface Filters {
   month: string;
   year: string;
@@ -38,3 +29,15 @@ export interface Filters {
 }
 
 export type ActivityKey = keyof ActivityState;
+
+/**
+ * Represents an activity alert or notification in the dashboard.
+ */
+export interface Alert {
+  id: string;
+  type: 'delayed' | 'anomaly' | 'completed' | 'info';
+  title: string;
+  message: string;
+  location: string;
+  timestamp: string | number;
+}

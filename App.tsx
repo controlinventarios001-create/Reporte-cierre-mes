@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import AppIcon from './components/AppIcon';
 import KPICard from './components/KPICard';
@@ -9,40 +9,19 @@ import AuxiliarMonitor from './components/AuxiliarMonitor';
 import { Location, Filters, ActivityKey } from './types';
 import { ACTIVITY_MAP } from './constants';
 
-/**
- * SISTEMA DE CONFIGURACIÓN DINÁMICO
- * Detecta llaves en el entorno o permite entrada manual persistente.
- */
-const getAppConfig = () => {
-  const env = (import.meta as any).env || {};
-  const processEnv = (typeof process !== 'undefined' ? process.env : {}) as any;
-  const saved = JSON.parse(localStorage.getItem('SIA_CARIBE_CONFIG') || '{}');
-
-  const url = env.VITE_SUPABASE_URL || processEnv.VITE_SUPABASE_URL || saved.url || '';
-  const key = env.VITE_SUPABASE_ANON_KEY || processEnv.VITE_SUPABASE_ANON_KEY || saved.key || '';
-
-  return { url, key };
-};
+// Credenciales fijas para asegurar funcionalidad inmediata
+const SUPABASE_URL = "https://vnidipgbrasjlizdghew.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZuaWRpcGdicmFzamxpemRnaGV3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxNjQ4ODIsImV4cCI6MjA4Mzc0MDg4Mn0.O5URn2b6-ys04Mo-lGfJCcQ1U_EU4_nzdin8MV-YTWI";
 
 const App = () => {
-  const [config, setConfig] = useState(getAppConfig());
-  const [showConfigModal, setShowConfigModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [locations, setLocations] = useState<Location[]>([]);
   const [activeTab, setActiveTab] = useState<'matrix' | 'auxiliaries'>('matrix');
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
-  const [dbStatus, setDbStatus] = useState({ connected: false, message: 'Verificando...' });
-
-  // Instancia de Supabase reactiva a cambios de config
-  const supabase = useMemo(() => {
-    if (!config.url || !config.key) return null;
-    if (config.url.includes('supabase.com/dashboard')) return 'INVALID_URL';
-    try {
-      return createClient(config.url, config.key);
-    } catch (e) {
-      return null;
-    }
-  }, [config]);
+  const [dbStatus, setDbStatus] = useState({ connected: false, message: 'Iniciando...' });
+  
+  const lastUpdateRef = useRef<number>(0);
+  const supabase = useMemo(() => createClient(SUPABASE_URL, SUPABASE_KEY), []);
 
   const [filters, setFilters] = useState<Filters>(() => {
     const now = new Date();
@@ -88,19 +67,12 @@ const App = () => {
     }));
   }, []);
 
-  const loadData = useCallback(async () => {
-    if (!supabase || typeof supabase === 'string') {
-      setDbStatus({ connected: false, message: !config.url ? 'Sin configuración' : 'URL de API inválida' });
-      setLocations(generateDefaultLocations());
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
+  const loadData = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     setSyncStatus('syncing');
     
     try {
-      const { data, error } = await (supabase as any)
+      const { data, error } = await supabase
         .from('inventarios')
         .select('*')
         .eq('month', filters.month)
@@ -108,29 +80,57 @@ const App = () => {
 
       if (error) throw error;
 
-      let currentLocations = generateDefaultLocations();
-      if (data && data.length > 0) {
-        currentLocations = currentLocations.map(loc => {
-          const dbLoc = data.find(d => d.location_id === loc.id);
-          return dbLoc ? {
+      const baseLocations = generateDefaultLocations();
+      const updatedLocations = baseLocations.map(loc => {
+        const dbRow = data?.find(d => d.location_id === loc.id);
+        if (dbRow) {
+          return {
             ...loc,
-            activities: { ...loc.activities, ...dbLoc.activities },
-            observation: dbLoc.observation || '',
-            auxiliar: dbLoc.auxiliar || loc.auxiliar
-          } : loc;
-        });
-      }
-      setLocations(currentLocations);
+            activities: { ...loc.activities, ...dbRow.activities },
+            observation: dbRow.observation || '',
+            auxiliar: dbRow.auxiliar || loc.auxiliar
+          };
+        }
+        return loc;
+      });
+
+      setLocations(updatedLocations);
       setSyncStatus('success');
-      setDbStatus({ connected: true, message: 'Base de Datos Conectada' });
-    } catch (e: any) {
+      setDbStatus({ connected: true, message: 'Sincronizado' });
+    } catch (e) {
+      console.error("Error loading:", e);
       setSyncStatus('error');
-      setDbStatus({ connected: false, message: 'Error de Tabla/Acceso' });
-      setLocations(generateDefaultLocations());
+      setDbStatus({ connected: false, message: 'Offline / Error' });
+      if (!isSilent) setLocations(generateDefaultLocations());
     } finally {
       setLoading(false);
     }
-  }, [filters.month, filters.year, generateDefaultLocations, supabase, config.url]);
+  }, [filters.month, filters.year, generateDefaultLocations, supabase]);
+
+  // Suscripción Real-Time Optimizada
+  useEffect(() => {
+    const channel = supabase
+      .channel('table-db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventarios' }, (payload) => {
+          // Solo actualizar si el cambio es para el periodo actual
+          const record = payload.new as any;
+          if (record && record.month === filters.month && record.year === filters.year) {
+            // Evitar recarga si el cambio fue originado por nosotros hace menos de 2 segs
+            if (Date.now() - lastUpdateRef.current > 2000) {
+              setLocations(prev => prev.map(loc => 
+                loc.id === record.location_id 
+                ? { ...loc, activities: record.activities, observation: record.observation, auxiliar: record.auxiliar }
+                : loc
+              ));
+            }
+          }
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setDbStatus(s => ({ ...s, connected: true }));
+      });
+
+    return () => { supabase.removeChannel(channel); };
+  }, [supabase, filters.month, filters.year]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -138,119 +138,148 @@ const App = () => {
     const locToUpdate = locations.find(l => l.id === locationId);
     if (!locToUpdate) return;
 
-    const nextLocState = { ...locToUpdate, ...updates };
-    setLocations(prev => prev.map(loc => loc.id === locationId ? nextLocState : loc));
-
-    if (!supabase || typeof supabase === 'string' || !dbStatus.connected) return;
-
+    const nextState = { ...locToUpdate, ...updates };
+    
+    // Optimistic Update
+    setLocations(prev => prev.map(l => l.id === locationId ? nextState : l));
+    lastUpdateRef.current = Date.now();
     setSyncStatus('syncing');
+
     try {
-      const { error } = await (supabase as any).from('inventarios').upsert({
+      const { error } = await supabase.from('inventarios').upsert({
         id: `${filters.month}-${filters.year}-${locationId}`,
         month: filters.month,
         year: filters.year,
         location_id: locationId,
-        activities: nextLocState.activities,
-        observation: nextLocState.observation,
-        auxiliar: nextLocState.auxiliar,
+        activities: nextState.activities,
+        observation: nextState.observation,
+        auxiliar: nextState.auxiliar,
         updated_at: new Date().toISOString()
       }, { onConflict: 'id' });
       
       if (error) throw error;
       setSyncStatus('success');
-    } catch (e: any) {
+    } catch (e) {
       setSyncStatus('error');
+      console.error("Sync error:", e);
     }
   };
 
-  const saveManualConfig = (url: string, key: string) => {
-    const newConfig = { url, key };
-    localStorage.setItem('SIA_CARIBE_CONFIG', JSON.stringify(newConfig));
-    setConfig(newConfig);
-    setShowConfigModal(false);
-    window.location.reload();
+  const handleExport = () => {
+    const headers = ['Sede', 'Auxiliar', ...ACTIVITY_MAP.map(a => a.label), 'Observaciones'];
+    const rows = locations.map(loc => [
+      loc.name,
+      loc.auxiliar,
+      ...ACTIVITY_MAP.map(a => loc.activities[a.key] ? 'SI' : 'NO'),
+      loc.observation
+    ]);
+    
+    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `Reporte_Cierre_${filters.month}_${filters.year}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
+  const handleReset = async () => {
+    if (!window.confirm("¿BORRAR TODO EL PROGRESO DEL MES SELECCIONADO?")) return;
+    
+    try {
+      const { error } = await supabase
+        .from('inventarios')
+        .delete()
+        .eq('month', filters.month)
+        .eq('year', filters.year);
+      
+      if (error) throw error;
+      loadData();
+    } catch (e) {
+      alert("Error al resetear datos.");
+    }
+  };
+
+  const kpis = useMemo(() => {
+    const totalPossible = locations.length * ACTIVITY_MAP.length;
+    const current = locations.reduce((acc, loc) => acc + Object.values(loc.activities).filter(Boolean).length, 0);
+    const completedSedes = locations.filter(loc => Object.values(loc.activities).every(Boolean)).length;
+    return {
+      progress: totalPossible ? Math.round((current / totalPossible) * 100) : 0,
+      completed: completedSedes,
+      alerts: locations.filter(l => l.observation).length,
+      pending: locations.length - completedSedes
+    };
+  }, [locations]);
+
+  const filteredLocations = useMemo(() => {
+    return locations.filter(loc => {
+      const matchGroup = filters.locationGroup === 'all' || loc.group === filters.locationGroup;
+      const matchSearch = loc.name.toLowerCase().includes(filters.search.toLowerCase()) || 
+                          loc.auxiliar.toLowerCase().includes(filters.search.toLowerCase());
+      return matchGroup && matchSearch;
+    });
+  }, [locations, filters]);
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-inter">
       <header className="bg-[#0f172a] text-white shadow-2xl sticky top-0 z-[100] border-b border-white/5">
         <div className="container mx-auto px-4 lg:px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-2.5 rounded-xl">
-              <AppIcon name="LayoutGrid" size={26} className="text-white" />
+            <div className="bg-blue-600 p-2 rounded-lg shadow-lg shadow-blue-500/20">
+              <AppIcon name="LayoutGrid" size={24} className="text-white" />
             </div>
             <div>
-              <h1 className="font-black text-lg lg:text-2xl tracking-tighter uppercase">CARIBE SAS</h1>
-              <div className="flex items-center gap-2 mt-1">
-                <div className={`h-2.5 w-2.5 rounded-full ${dbStatus.connected ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{dbStatus.message}</span>
+              <h1 className="font-black text-lg lg:text-xl tracking-tighter uppercase leading-none">CARIBE SAS</h1>
+              <div className="flex items-center gap-2 mt-1.5">
+                <div className={`h-2 w-2 rounded-full ${dbStatus.connected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-rose-500 animate-pulse'}`} />
+                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                  {syncStatus === 'syncing' ? 'Guardando en la nube...' : dbStatus.message}
+                </span>
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {!dbStatus.connected && (
-              <button 
-                onClick={() => setShowConfigModal(true)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-[10px] font-black uppercase rounded-lg transition-all shadow-lg shadow-blue-500/20"
-              >
-                Configurar
-              </button>
-            )}
-            <button onClick={loadData} className="p-3 bg-white/5 hover:bg-white/10 rounded-full">
-              <AppIcon name="RefreshCw" size={20} className={syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-slate-400'} />
-            </button>
+          
+          <div className="flex items-center gap-3">
+             <div className="hidden sm:flex flex-col items-end mr-4">
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Estado Global</span>
+                <span className="text-xs font-bold text-blue-400">{kpis.progress}% Completado</span>
+             </div>
+             <button onClick={() => loadData()} className="p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors active:scale-90">
+               <AppIcon name="RefreshCw" size={18} className={syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-slate-400'} />
+             </button>
           </div>
         </div>
       </header>
 
-      {showConfigModal && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
-            <h2 className="text-xl font-black text-slate-800 mb-2 uppercase tracking-tight">Configuración de Base de Datos</h2>
-            <p className="text-xs text-slate-500 mb-6 font-medium">Ingrese las credenciales de Supabase. Se guardarán localmente para esta sesión.</p>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const target = e.target as any;
-              saveManualConfig(target.url.value, target.key.value);
-            }} className="space-y-4">
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">URL del Proyecto:</label>
-                <input name="url" defaultValue={config.url} placeholder="https://xxx.supabase.co" className="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500" required />
-              </div>
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">API Anon Key:</label>
-                <input name="key" defaultValue={config.key} placeholder="eyJhbGciOiJIUzI1..." className="w-full mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500" required />
-              </div>
-              <div className="flex gap-2 pt-4">
-                <button type="button" onClick={() => setShowConfigModal(false)} className="flex-1 px-6 py-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-200 transition-all">Cerrar</button>
-                <button type="submit" className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl shadow-blue-500/30 transition-all">Guardar Todo</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      <main className="container mx-auto px-4 lg:px-6 py-6 flex-1 max-w-[1500px]">
-        <GlobalControls filters={filters} onFilterChange={setFilters} onExport={() => {}} onRefresh={loadData} onReset={() => {}} />
+      <main className="container mx-auto px-4 lg:px-6 py-6 flex-1 max-w-[1600px]">
+        <GlobalControls 
+          filters={filters} 
+          onFilterChange={setFilters} 
+          onExport={handleExport} 
+          onRefresh={() => loadData()} 
+          onReset={handleReset} 
+        />
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <KPICard title="Progreso" value={loading ? '...' : 0} subtitle="Avance Global" status="info" icon="Target" loading={loading} />
-          <KPICard title="Completas" value={0} subtitle="Meta alcanzada" status="success" icon="Verified" loading={loading} />
-          <KPICard title="Alertas" value={0} subtitle="Con observación" status="error" icon="StickyNote" loading={loading} />
-          <KPICard title="Pendientes" value={locations.length} subtitle="Por gestionar" status="warning" icon="Clock8" loading={loading} />
+          <KPICard title="Progreso" value={kpis.progress} subtitle="Cierre de Mes" status="info" icon="Target" loading={loading} />
+          <KPICard title="Sedes OK" value={kpis.completed} subtitle="100% Finalizadas" status="success" icon="Verified" loading={loading} />
+          <KPICard title="Alertas" value={kpis.alerts} subtitle="Novedades Reportadas" status="error" icon="AlertTriangle" loading={loading} />
+          <KPICard title="Pendientes" value={kpis.pending} subtitle="Sedes por terminar" status="warning" icon="Clock" loading={loading} />
         </div>
 
-        <div className="flex p-1 bg-slate-200 w-fit rounded-xl mb-6">
-           <button onClick={() => setActiveTab('matrix')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Matriz de Control</button>
-           <button onClick={() => setActiveTab('auxiliaries')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Monitor Auxiliares</button>
+        <div className="flex p-1 bg-slate-200 w-fit rounded-xl mb-6 shadow-inner">
+           <button onClick={() => setActiveTab('matrix')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'matrix' ? 'bg-white text-blue-600 shadow-md scale-105' : 'text-slate-500 hover:text-slate-700'}`}>Matriz de Control</button>
+           <button onClick={() => setActiveTab('auxiliaries')} className={`px-6 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'auxiliaries' ? 'bg-white text-blue-600 shadow-md scale-105' : 'text-slate-500 hover:text-slate-700'}`}>Monitor Auxiliares</button>
         </div>
 
         {activeTab === 'matrix' ? (
-            <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden mb-12">
+            <div className="bg-white rounded-[2rem] shadow-2xl border border-slate-200 overflow-hidden mb-12">
                 <div className="overflow-x-auto no-scrollbar">
-                    <div className="min-w-[1100px]">
-                        <div className="grid grid-cols-12 bg-slate-50/50 border-b border-slate-100 h-[170px]">
-                            <div className="col-span-3 flex items-end px-8 pb-4"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Sede</span></div>
+                    <div className="min-w-[1200px]">
+                        <div className="grid grid-cols-12 bg-slate-50 border-b border-slate-100 h-[180px]">
+                            <div className="col-span-3 flex items-end px-8 pb-6 font-black text-[10px] uppercase text-slate-400 tracking-widest">Sede / Auxiliar Responsable</div>
                             <div className="col-span-6 grid grid-cols-10 h-full border-l border-slate-100">
                                 {ACTIVITY_MAP.map(a => (
                                     <div key={a.key} className="relative flex justify-center border-r border-slate-50 last:border-r-0">
@@ -258,40 +287,42 @@ const App = () => {
                                     </div>
                                 ))}
                             </div>
-                            <div className="col-span-2 flex items-end justify-center pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Avance</span></div>
-                            <div className="col-span-1 flex items-end justify-end pr-8 pb-4 border-l border-slate-100"><span className="font-black text-[11px] uppercase text-slate-400 tracking-widest">Obs</span></div>
+                            <div className="col-span-2 flex items-end justify-center pb-6 border-l border-slate-100 font-black text-[10px] uppercase text-slate-400 tracking-widest">Avance</div>
+                            <div className="col-span-1 flex items-end justify-end pr-8 pb-6 border-l border-slate-100 font-black text-[10px] uppercase text-slate-400 tracking-widest">Obs</div>
                         </div>
-                        <div className="divide-y divide-slate-100">
-                            {loading ? <div className="py-32 text-center text-slate-400 font-black uppercase text-[12px] animate-pulse">Cargando Sistema...</div> :
-                            locations.map(loc => (
+                        <div className="divide-y divide-slate-100 min-h-[400px]">
+                            {loading ? (
+                              <div className="flex flex-col items-center justify-center py-32 gap-4">
+                                <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                                <span className="font-black text-slate-400 uppercase text-[10px] tracking-widest">Conectando con la base de datos...</span>
+                              </div>
+                            ) : filteredLocations.length === 0 ? (
+                              <div className="py-32 text-center text-slate-400 font-black uppercase text-[12px]">No se encontraron sedes</div>
+                            ) : (
+                              filteredLocations.map(loc => (
                                 <LocationProgressRow 
                                     key={loc.id} 
                                     location={loc} 
-                                    // Fix: handleUpdate type mismatch. onActivityToggle expects (string, ActivityKey, boolean).
-                                    // We wrap it to pass the correct Partial<Location> updates object.
-                                    onActivityToggle={(locationId, activityId, checked) => {
-                                      const locToUpdate = locations.find(l => l.id === locationId);
-                                      if (locToUpdate) {
-                                        handleUpdate(locationId, {
-                                          activities: {
-                                            ...locToUpdate.activities,
-                                            [activityId]: checked
-                                          }
-                                        });
-                                      }
+                                    onActivityToggle={(id, actId, val) => {
+                                      const updatedActivities = { ...loc.activities, [actId]: val };
+                                      handleUpdate(id, { activities: updatedActivities });
                                     }}
                                     onObservationUpdate={(id, obs) => handleUpdate(id, { observation: obs })}
                                     onAuxiliarUpdate={(id, aux) => handleUpdate(id, { auxiliar: aux })}
                                 />
-                            ))}
+                              ))
+                            )}
                         </div>
                     </div>
                 </div>
             </div>
         ) : <AuxiliarMonitor locations={locations} />}
       </main>
-      <footer className="bg-white border-t border-slate-200 py-12 text-center text-[10px] font-black text-slate-300 tracking-[0.5em] uppercase">
-        SISTEMA CARIBE SAS • 2024
+      <footer className="bg-white border-t border-slate-200 py-12 text-center">
+        <div className="flex flex-col items-center gap-2">
+           <span className="text-[10px] font-black text-slate-300 tracking-[0.5em] uppercase">CARIBE SAS • CONTROL DE INVENTARIOS</span>
+           <span className="text-[8px] font-bold text-slate-200 uppercase">Tecnología de Sincronización Real-Time v2.0</span>
+        </div>
       </footer>
     </div>
   );
